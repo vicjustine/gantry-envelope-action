@@ -1,0 +1,88 @@
+name: "Gantry Envelope Check"
+description: "Check a planned crane lift against the gantry load envelope"
+author: "vicjustine"
+
+branding: 
+  icon: "anchor"
+  color: "blue"
+
+inputs: 
+  gantry: 
+    description: "Gantry class: panamax, postpanamax or neopanamax"
+    required: true
+  outreach: 
+    description: "Trolley outreach in metres"
+    required: true
+  load: 
+    description: "Planned load in tonnes"
+    required: true
+  fail-on-unsafe: 
+    description: "Fail the step when the lift exceeds the envelope"
+    required: false
+    default: "true"
+outputs:
+  safe:
+    description: "true when the lift is inside the envelope"
+    value: ${{ steps.run.outputs.safe }}
+  swl: 
+    description: "Safe workign load in tonnes at this outreach" 
+    value: ${{ steps.run.outputs.swl }}
+  margin: 
+    description: "Tonnes of headroom; negative means over the envelope"
+    value: ${{ steps.run.outputs.margin }}
+
+runs: 
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install gantryctl
+      shell: bash
+      run: pip install --quiet "gantryctl @ git+https://github.com/vicjustine/gantryctl@v1"
+
+    - name: Run the envelope check
+      id: run
+      shell: bash
+      run: |
+        set +e
+        out=$(gantryctl check \
+          --gantry "${{ inputs.gantry }}" \
+          --outreach "${{ inputs.outreach }}" \
+          --load "${{ inputs.load }}")
+        code=$?
+        set -e
+        if [ "$code" -eq 2 ]; then
+          echo "::error::invalid lift parameters"
+          exit 2
+        fi 
+        echo "$out"
+        safe=$(echo "$out" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["safe"]))')
+        swl=$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["swl_t"])')
+        margin=$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["margin_t"])')
+        echo "safe=$safe" >> "$GITHUB_OUTPUT"
+        echo "swl=$swl" >> "$GITHUB_OUTPUT"
+        echo "margin=$margin" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Gantry envelope check" 
+          echo ""
+          echo "| field | value |"
+          echo "|---|---|" 
+          echo "| gantry | ${{ inputs.gantry }} |"
+          echo "| outreach | ${{ inputs.outreach }} m |"
+          echo "| load | ${{ inputs.load }} t |"
+          echo "| SWL at outreach | ${swl} t |"
+          echo "| margin | ${margin} t |"
+          echo "| verdict | ${safe} |"
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ "${{ inputs.fail-on-unsafe }}" = "true" ] && [ "$code" -eq 1 ]; then
+          echo "::error::lift exceeds the gantry envelope by ${margin#-} t" 
+          exit 1
+        fi
+        
+  
+
+
+      
